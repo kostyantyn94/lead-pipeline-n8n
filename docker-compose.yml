@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${PG_USER:-n8n}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-n8npass}
+      POSTGRES_DB: ${PG_DB:-leads}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - ./scripts/sql:/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-n8n} -d ${PG_DB:-leads}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5678:5678"
+    environment:
+      # n8n's own storage (separate database, created by db/00-init.sql)
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${PG_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${PG_PASSWORD:-n8npass}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change-me-to-a-long-random-string}
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_SECURE_COOKIE: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      GENERIC_TIMEZONE: ${TZ:-Europe/Kyiv}
+      # pipeline configuration, read by workflows through $env
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://mock-llm:8081/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-mock}
+      LLM_MODEL: ${LLM_MODEL:-mock-qualifier}
+      ICP_DESCRIPTION: ${ICP_DESCRIPTION:-B2B SaaS companies and agencies with 10-500 employees; buyers are decision makers in sales, marketing or operations who need CRM and workflow automation}
+      CRM_BASE_URL: ${CRM_BASE_URL:-http://mock-crm:8080}
+      CRM_TOKEN: ${CRM_TOKEN:-mock}
+      NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+      ENRICH_WEBSITE: ${ENRICH_WEBSITE:-false}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/import:ro
+
+  # Speaks a subset of the HubSpot CRM v3 contacts API, so the same workflow runs offline.
+  mock-crm:
+    image: node:22-alpine
+    command: ["node", "/app/crm.js"]
+    volumes:
+      - ./mock:/app:ro
+    ports:
+      - "8080:8080"
+
+  # Speaks the OpenAI chat-completions shape and answers deterministically, for reproducible tests.
+  mock-llm:
+    image: node:22-alpine
+    command: ["node", "/app/llm.js"]
+    environment:
+      MOCK_LLM_FAIL_EVERY: ${MOCK_LLM_FAIL_EVERY:-0}
+    volumes:
+      - ./mock:/app:ro
+    ports:
+      - "8081:8081"
+
+volumes:
+  pgdata:
+  n8n_data:

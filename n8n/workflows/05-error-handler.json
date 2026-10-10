@@ -1,0 +1,152 @@
+{
+  "id": "lp05errors000001",
+  "name": "05 Error handler",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 05 Error handler\nEvery other workflow points here (settings.errorWorkflow). Failures are stored in the errors table with the workflow, the failing node and the message, and optionally posted to a Slack-compatible webhook. The dashboard shows the count.",
+        "width": 560,
+        "height": 120,
+        "color": 7
+      },
+      "name": "Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        40,
+        -160
+      ],
+      "id": "lp05errors000001-01"
+    },
+    {
+      "parameters": {},
+      "name": "Error trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        40,
+        40
+      ],
+      "id": "lp05errors000001-02"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into errors (workflow, node, message, payload) values ($1, $2, $3, $4::jsonb) returning id",
+        "options": {
+          "queryReplacement": "={{ [String(($json.workflow && $json.workflow.name) || ''), String(($json.execution && $json.execution.lastNodeExecuted) || ''), String(($json.execution && $json.execution.error && $json.execution.error.message) || ($json.trigger && $json.trigger.error && $json.trigger.error.message) || 'unknown error').slice(0, 1000), JSON.stringify({ workflow: $json.workflow, execution: $json.execution ? { id: $json.execution.id, url: $json.execution.url, mode: $json.execution.mode, lastNodeExecuted: $json.execution.lastNodeExecuted, error: $json.execution.error ? { name: $json.execution.error.name, message: $json.execution.error.message, description: $json.execution.error.description } : null } : null, trigger: $json.trigger ? { error: $json.trigger.error ? { name: $json.trigger.error.name, message: $json.trigger.error.message } : null } : null })] }}"
+        }
+      },
+      "name": "Log error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        300,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp05errors000001-03"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ !!$env.NOTIFY_WEBHOOK_URL }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Notify on?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        40
+      ],
+      "id": "lp05errors000001-04"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOTIFY_WEBHOOK_URL }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'lead-pipeline error in ' + String(($('Error trigger').first().json.workflow && $('Error trigger').first().json.workflow.name) || '?') + ' at node ' + String(($('Error trigger').first().json.execution && $('Error trigger').first().json.execution.lastNodeExecuted) || '?') }) }}"
+      },
+      "name": "Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        820,
+        40
+      ],
+      "onError": "continueRegularOutput",
+      "id": "lp05errors000001-05"
+    }
+  ],
+  "connections": {
+    "Error trigger": {
+      "main": [
+        [
+          {
+            "node": "Log error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log error": {
+      "main": [
+        [
+          {
+            "node": "Notify on?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify on?": {
+      "main": [
+        [
+          {
+            "node": "Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

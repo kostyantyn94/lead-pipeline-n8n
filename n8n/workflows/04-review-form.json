@@ -1,0 +1,422 @@
+{
+  "id": "lp04review000001",
+  "name": "04 Review form",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 04 Review form\n/form/review: a human approves or rejects a lead from the review queue. The decision outranks rules and AI (set_decision priority) and can become a domain rule, so the same case never needs a human twice. Free-mail domains never become rules.",
+        "width": 560,
+        "height": 140,
+        "color": 7
+      },
+      "name": "Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        40,
+        -180
+      ],
+      "id": "lp04review000001-01"
+    },
+    {
+      "parameters": {
+        "formTitle": "Lead review",
+        "formDescription": "Approve or reject a lead from the review queue (ids are on /webhook/dashboard). Your decision outranks rules and AI and can become a rule.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Lead ID",
+              "fieldType": "number",
+              "requiredField": true,
+              "placeholder": "id from the dashboard review queue"
+            },
+            {
+              "fieldLabel": "Decision",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "qualified"
+                  },
+                  {
+                    "option": "rejected"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Create a rule",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "no"
+                  },
+                  {
+                    "option": "always qualify this domain"
+                  },
+                  {
+                    "option": "always reject this domain"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Note",
+              "fieldType": "textarea",
+              "placeholder": "optional: why"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Lead review",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        40,
+        40
+      ],
+      "webhookId": "review",
+      "id": "lp04review000001-02"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select l.*, exists (select 1 from rules r where r.kind = 'free_mail' and r.pattern = l.domain) as is_free_domain from leads l where l.id = $1",
+        "options": {
+          "queryReplacement": "={{ [Number($json['Lead ID'])] }}"
+        }
+      },
+      "name": "Load lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        300,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true,
+      "id": "lp04review000001-03"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turns a review-form submission plus the loaded lead into a human decision and, optionally, a new rule.\n// Guard: domain rules are never created for free-mail domains or leads without a domain. Pure function, unit-tested.\nfunction main(items) {\n  return items.map(({ form, lead }) => {\n    if (!lead || !lead.id) {\n      return { lead_id: null, decision: null, score: null, reason: null, rule_kind: null, pattern: null, rule_decision: null, note: null, warning: 'lead not found' };\n    }\n    const decision = String(form['Decision']) === 'qualified' ? 'qualified' : 'rejected';\n    const want = String(form['Create a rule'] || 'no').toLowerCase();\n    const note = String(form['Note'] || '').trim();\n    let rule_kind = want.startsWith('always qualify') ? 'domain_allow' : want.startsWith('always reject') ? 'domain_block' : null;\n    let warning = null;\n    if (rule_kind && (!lead.domain || lead.is_free_domain)) {\n      warning = `no domain rule created for \"${lead.domain || 'a lead without email'}\": free-mail provider or missing domain`;\n      rule_kind = null;\n    }\n    return {\n      lead_id: lead.id,\n      decision,\n      score: decision === 'qualified' ? 1 : 0,\n      reason: `human decision${note ? ': ' + note : ''}`,\n      rule_kind,\n      pattern: rule_kind ? lead.domain : null,\n      rule_decision: rule_kind === 'domain_allow' ? 'qualified' : 'rejected',\n      note: note || `created from lead ${lead.id} via the review form`,\n      warning,\n    };\n  });\n}\n\nreturn main([{ form: $('Lead review').first().json, lead: $input.first().json }], {}).map((json) => ({ json }));"
+      },
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        40
+      ],
+      "id": "lp04review000001-04"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from set_decision($1, $2, 'human', $3, null, $4, null, null, null)",
+        "options": {
+          "queryReplacement": "={{ [$json.lead_id, $json.decision, $json.score, $json.reason] }}"
+        }
+      },
+      "name": "Decision by human",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        820,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true,
+      "id": "lp04review000001-05"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Prepare').first().json.rule_kind !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Rule?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1080,
+        40
+      ],
+      "id": "lp04review000001-06"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into rules (kind, pattern, decision, score, note, created_by) values ($1, $2, $3, $4, $5, 'human') on conflict (kind, pattern) do update set decision = excluded.decision, score = excluded.score, note = excluded.note, enabled = true returning id",
+        "options": {
+          "queryReplacement": "={{ [$('Prepare').first().json.rule_kind, $('Prepare').first().json.pattern, $('Prepare').first().json.rule_decision, $('Prepare').first().json.score, $('Prepare').first().json.note] }}"
+        }
+      },
+      "name": "Save rule",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1340,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp04review000001-07"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Prepare').first().json.decision === 'qualified' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Qualified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1600,
+        40
+      ],
+      "id": "lp04review000001-08"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "lead_id",
+              "value": "={{ $('Prepare').first().json.lead_id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "name": "CRM lead id",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1860,
+        40
+      ],
+      "id": "lp04review000001-09"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "lp03crmsync00001"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "name": "Sync to CRM (03)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2120,
+        40
+      ],
+      "id": "lp04review000001-10"
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "completionTitle": "Saved",
+        "completionMessage": "={{ $('Prepare').first().json.warning === 'lead not found' ? 'Lead not found.' : ('Lead ' + $('Prepare').first().json.lead_id + ' → ' + $('Prepare').first().json.decision + ($('Prepare').first().json.rule_kind ? ' (rule saved: ' + $('Prepare').first().json.rule_kind + ' ' + $('Prepare').first().json.pattern + ')' : '') + ($('Prepare').first().json.warning ? '. ' + $('Prepare').first().json.warning : '')) }}",
+        "options": {}
+      },
+      "name": "Saved",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        2380,
+        40
+      ],
+      "id": "lp04review000001-11"
+    }
+  ],
+  "connections": {
+    "Lead review": {
+      "main": [
+        [
+          {
+            "node": "Load lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load lead": {
+      "main": [
+        [
+          {
+            "node": "Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare": {
+      "main": [
+        [
+          {
+            "node": "Decision by human",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision by human": {
+      "main": [
+        [
+          {
+            "node": "Rule?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rule?": {
+      "main": [
+        [
+          {
+            "node": "Save rule",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save rule": {
+      "main": [
+        [
+          {
+            "node": "Qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualified?": {
+      "main": [
+        [
+          {
+            "node": "CRM lead id",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM lead id": {
+      "main": [
+        [
+          {
+            "node": "Sync to CRM (03)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync to CRM (03)": {
+      "main": [
+        [
+          {
+            "node": "Saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "lp05errors000001"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

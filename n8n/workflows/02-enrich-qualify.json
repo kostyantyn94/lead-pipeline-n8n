@@ -1,0 +1,887 @@
+{
+  "id": "lp02qualify00001",
+  "name": "02 Enrich & qualify",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 02 Enrich & qualify\nPer lead: deterministic enrichment (free-mail flag, MX record via DNS-over-HTTPS, optional website title) → rule engine (rules are rows in the database) → only unresolved leads go to the LLM → the answer is validated against a closed schema and thresholds → decision is written through set_decision() (human > rule > ai) → qualified leads go to 03. A schedule re-checks leads left undecided (e.g. the model was down).",
+        "width": 560,
+        "height": 180,
+        "color": 7
+      },
+      "name": "Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        40,
+        -200
+      ],
+      "id": "lp02qualify00001-01"
+    },
+    {
+      "parameters": {},
+      "name": "When called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        40,
+        40
+      ],
+      "id": "lp02qualify00001-02"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "name": "Every 10 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        40,
+        230
+      ],
+      "id": "lp02qualify00001-03"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select id as lead_id from leads where decision is null and created_at < now() - interval '2 minutes' order by id limit 20",
+        "options": {}
+      },
+      "name": "Pending leads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        300,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp02qualify00001-04"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select l.*, (select coalesce(jsonb_agg(r), '[]'::jsonb) from rules r where r.enabled) as rules from leads l where l.id = $1",
+        "options": {
+          "queryReplacement": "={{ [$json.lead_id] }}"
+        }
+      },
+      "name": "Load lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp02qualify00001-05"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "llm_base_url",
+              "value": "={{ $env.LLM_BASE_URL }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "llm_api_key",
+              "value": "={{ $env.LLM_API_KEY }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "llm_model",
+              "value": "={{ $env.LLM_MODEL }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "icp",
+              "value": "={{ $env.ICP_DESCRIPTION }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "enrich_website",
+              "value": "={{ $env.ENRICH_WEBSITE }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        820,
+        40
+      ],
+      "id": "lp02qualify00001-06"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1080,
+        40
+      ],
+      "id": "lp02qualify00001-07"
+    },
+    {
+      "parameters": {},
+      "name": "Lead",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        40
+      ],
+      "id": "lp02qualify00001-08"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://dns.google/resolve?name=' + encodeURIComponent($json.domain || 'invalid.invalid') + '&type=MX' }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "name": "MX lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        40
+      ],
+      "onError": "continueRegularOutput",
+      "id": "lp02qualify00001-09"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Config').first().json.enrich_website === 'true' && !!$('Lead').first().json.domain }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Website on?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1860,
+        40
+      ],
+      "id": "lp02qualify00001-10"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://' + $('Lead').first().json.domain }}",
+        "options": {
+          "timeout": 6000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "name": "Website title",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2120,
+        40
+      ],
+      "onError": "continueRegularOutput",
+      "id": "lp02qualify00001-11"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic enrichment plus the rule engine. Rules are rows from the database (lead.rules, loaded with the lead),\n// applied in a fixed order; a null rule means \"no rule applies, ask the model\". Pure function: unit-tested outside n8n.\n// Input item: { lead, dns, website } where dns is the Google DNS-over-HTTPS JSON (or an error item) and website is the\n// raw homepage response ({ data: '<html>...' }) or null when website enrichment is off.\nfunction main(items) {\n  return items.map(({ lead, dns, website }) => {\n    const rules = (lead.rules || []).filter((r) => r.enabled !== false);\n    const domain = (lead.domain || '').toLowerCase();\n    const title = lead.job_title || '';\n    const byKind = (kind) => rules.filter((r) => r.kind === kind);\n    const domainRule = (kind) => byKind(kind).find((r) => r.pattern.toLowerCase() === domain) || null;\n    const titleRule = (kind) => byKind(kind).find((r) => {\n      try { return new RegExp(r.pattern, 'i').test(title); } catch { return false; }\n    }) || null;\n\n    const freeMail = domainRule('free_mail');\n    const is_free_mail = !!freeMail;\n    const mx_valid = !!(dns && dns.Status === 0 && Array.isArray(dns.Answer) && dns.Answer.some((a) => a.type === 15));\n    const website_title = website && typeof website.data === 'string'\n      ? ((website.data.match(/<title[^>]*>([^<]{1,200})/i) || [])[1] || '').replace(/\\s+/g, ' ').trim() || null\n      : null;\n\n    let rule = null;\n    let r;\n    if ((r = domainRule('domain_block'))) {\n      rule = { id: r.id, decision: 'rejected', score: r.score ?? 0, reason: `blocked domain ${domain}${r.note ? ': ' + r.note : ''}` };\n    } else if ((r = domainRule('domain_allow'))) {\n      rule = { id: r.id, decision: r.decision || 'qualified', score: r.score ?? 1, reason: `allow-listed domain ${domain}${r.note ? ': ' + r.note : ''}` };\n    } else if ((r = titleRule('title_reject'))) {\n      rule = { id: r.id, decision: 'rejected', score: r.score ?? 0.1, reason: `title \"${title}\" matches a reject rule${r.note ? ' (' + r.note + ')' : ''}` };\n    } else if (is_free_mail && !lead.company) {\n      rule = { id: freeMail.id, decision: 'rejected', score: 0.1, reason: `free-mail address (${domain}) without a company` };\n    } else if (is_free_mail && lead.company) {\n      rule = { id: freeMail.id, decision: 'review', score: 0.4, reason: `free-mail address (${domain}) but a company is given: ${lead.company}` };\n    } else if (!lead.email && lead.phone) {\n      rule = { id: null, decision: 'review', score: 0.3, reason: 'phone-only lead: nothing to enrich or score, needs a human' };\n    } else if ((r = titleRule('title_qualify'))) {\n      rule = { id: r.id, decision: 'qualified', score: r.score ?? 0.9, reason: `decision-maker title \"${title}\" at corporate domain ${domain}` };\n    }\n\n    // Only what the model needs: no ids, no raw payload, no PII beyond the first name.\n    const lead_for_ai = {\n      first_name: lead.first_name || '', company: lead.company || '', job_title: title, domain,\n      country: lead.country || '', source: lead.source || '', message: lead.message || '',\n      is_free_mail, mx_valid, website_title,\n    };\n    return { lead_id: lead.id, is_free_mail, mx_valid, website_title, rule, lead_for_ai };\n  });\n}\n\nreturn main([{ lead: $('Lead').first().json, dns: $('MX lookup').first().json, website: (() => { try { return $('Website title').first().json; } catch (e) { return null; } })() }], {}).map((json) => ({ json }));"
+      },
+      "name": "Enrich & apply rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2380,
+        40
+      ],
+      "id": "lp02qualify00001-12"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update leads set is_free_mail = $2, mx_valid = $3, website_title = $4, enriched_at = now() where id = $1 returning id",
+        "options": {
+          "queryReplacement": "={{ [$json.lead_id, $json.is_free_mail, $json.mx_valid, $json.website_title] }}"
+        }
+      },
+      "name": "Save enrichment",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2640,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp02qualify00001-13"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Enrich & apply rules').first().json.rule !== null }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Rule matched?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2900,
+        40
+      ],
+      "id": "lp02qualify00001-14"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from set_decision($1, $2, 'rule', $3, null, $4, null, null, $5)",
+        "options": {
+          "queryReplacement": "={{ [$('Enrich & apply rules').first().json.lead_id, $('Enrich & apply rules').first().json.rule.decision, $('Enrich & apply rules').first().json.rule.score, $('Enrich & apply rules').first().json.rule.reason, $('Enrich & apply rules').first().json.rule.id] }}"
+        }
+      },
+      "name": "Decision by rule",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3160,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp02qualify00001-15"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.decision === 'qualified' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Rule qualified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3420,
+        40
+      ],
+      "id": "lp02qualify00001-16"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into lead_events (lead_id, event, actor, details) values ($1, 'ai_called', 'ai', $2::jsonb) returning id",
+        "options": {
+          "queryReplacement": "={{ [$('Enrich & apply rules').first().json.lead_id, JSON.stringify({ model: $('Config').first().json.llm_model })] }}"
+        }
+      },
+      "name": "Log AI call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3160,
+        230
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp02qualify00001-17"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.llm_base_url + '/chat/completions' }}",
+        "options": {
+          "timeout": 90000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').first().json.llm_api_key }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.llm_model, temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: \"You are a B2B lead qualification analyst. Given one inbound lead as JSON, answer with ONLY a JSON object with these keys: fit_score (number 0-1: how well the lead matches the ICP), segment (exactly one of: saas, agency, ecommerce, services, other), confidence (number 0-1: how sure you are given the available data; be low when title or message are missing), reason (one sentence, max 300 characters, cite the concrete signals), opener (one personalized first line for an outreach email, max 300 characters, no placeholders, no exclamation marks). No markdown, no extra keys.\" + ' ICP: ' + $('Config').first().json.icp }, { role: 'user', content: JSON.stringify($('Enrich & apply rules').first().json.lead_for_ai) } ] }) }}"
+      },
+      "name": "LLM qualify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3420,
+        230
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "id": "lp02qualify00001-18"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validates the model's answer against a closed schema and turns it into a decision.\n// The model never decides alone: invalid output or low confidence always lands in the human review queue.\n// Pure function: unit-tested outside n8n. Input item: the raw chat-completions response.\nconst SEGMENTS = ['saas', 'agency', 'ecommerce', 'services', 'other'];\nconst ACCEPT = { fit: 0.7, confidence: 0.8 };   // qualified when both are reached\nconst REJECT = { fit: 0.4, confidence: 0.8 };   // rejected when fit is below and confidence is high\nconst MAX_TEXT = 500;\n\nfunction parse(raw) {\n  const text = String(raw ?? '').trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');\n  return JSON.parse(text);\n}\n\nfunction main(items) {\n  return items.map((res) => {\n    const raw = res && res.choices && res.choices[0] && res.choices[0].message ? res.choices[0].message.content : '';\n    const problems = [];\n    let out = null;\n    try { out = parse(raw); } catch { problems.push('not valid JSON'); }\n    if (out && typeof out === 'object' && !Array.isArray(out)) {\n      const num01 = (k) => typeof out[k] === 'number' && Number.isFinite(out[k]) && out[k] >= 0 && out[k] <= 1;\n      if (!num01('fit_score')) problems.push('fit_score must be a number between 0 and 1');\n      if (!num01('confidence')) problems.push('confidence must be a number between 0 and 1');\n      if (!SEGMENTS.includes(out.segment)) problems.push(`segment must be one of ${SEGMENTS.join('|')}`);\n      if (typeof out.reason !== 'string' || !out.reason.trim()) problems.push('reason must be a non-empty string');\n      if (typeof out.opener !== 'string') problems.push('opener must be a string');\n    } else if (!problems.length) {\n      problems.push('answer is not a JSON object');\n    }\n\n    if (problems.length) {\n      return {\n        valid: false, decision: 'review', score: null, segment: null, confidence: null, opener: null,\n        reason: `ai_invalid_output: ${problems.join('; ')}`, raw: String(raw ?? '').slice(0, MAX_TEXT),\n      };\n    }\n    const fit = Math.round(out.fit_score * 1000) / 1000;\n    const confidence = Math.round(out.confidence * 1000) / 1000;\n    const decision = fit >= ACCEPT.fit && confidence >= ACCEPT.confidence ? 'qualified'\n      : fit < REJECT.fit && confidence >= REJECT.confidence ? 'rejected'\n      : 'review';\n    return {\n      valid: true, decision, score: fit, segment: out.segment, confidence,\n      reason: out.reason.trim().slice(0, MAX_TEXT), opener: out.opener.trim().slice(0, MAX_TEXT),\n      model: res.model || null, usage: res.usage || null,\n    };\n  });\n}\n\nreturn main($input.all().map((i) => i.json), {}).map((json) => ({ json }));"
+      },
+      "name": "Validate AI output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3680,
+        40
+      ],
+      "id": "lp02qualify00001-19"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from set_decision($1, $2, 'ai', $3, $4, $5, $6, $7, null)",
+        "options": {
+          "queryReplacement": "={{ [$('Enrich & apply rules').first().json.lead_id, $json.decision, $json.score, $json.segment, $json.reason, $json.opener, $json.confidence] }}"
+        }
+      },
+      "name": "Decision by AI",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3940,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp02qualify00001-20"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.decision === 'qualified' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "AI qualified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4200,
+        40
+      ],
+      "id": "lp02qualify00001-21"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from set_decision($1, 'review', 'ai', null, null, $2, null, null, null)",
+        "options": {
+          "queryReplacement": "={{ [$('Enrich & apply rules').first().json.lead_id, 'ai_unavailable: ' + String(($json.error && $json.error.message) || $json.error || 'unknown error').slice(0, 300)] }}"
+        }
+      },
+      "name": "AI unavailable → review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3680,
+        230
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp02qualify00001-22"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "lead_id",
+              "value": "={{ $('Enrich & apply rules').first().json.lead_id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "name": "CRM lead id",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        4460,
+        40
+      ],
+      "id": "lp02qualify00001-23"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "lp03crmsync00001"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "name": "Sync to CRM (03)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        4720,
+        40
+      ],
+      "id": "lp02qualify00001-24"
+    },
+    {
+      "parameters": {},
+      "name": "Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        230
+      ],
+      "id": "lp02qualify00001-25"
+    }
+  ],
+  "connections": {
+    "When called": {
+      "main": [
+        [
+          {
+            "node": "Load lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 10 min": {
+      "main": [
+        [
+          {
+            "node": "Pending leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pending leads": {
+      "main": [
+        [
+          {
+            "node": "Load lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load lead": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop": {
+      "main": [
+        [
+          {
+            "node": "Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead": {
+      "main": [
+        [
+          {
+            "node": "MX lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MX lookup": {
+      "main": [
+        [
+          {
+            "node": "Website on?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Website on?": {
+      "main": [
+        [
+          {
+            "node": "Website title",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enrich & apply rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Website title": {
+      "main": [
+        [
+          {
+            "node": "Enrich & apply rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich & apply rules": {
+      "main": [
+        [
+          {
+            "node": "Save enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save enrichment": {
+      "main": [
+        [
+          {
+            "node": "Rule matched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rule matched?": {
+      "main": [
+        [
+          {
+            "node": "Decision by rule",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log AI call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision by rule": {
+      "main": [
+        [
+          {
+            "node": "Rule qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rule qualified?": {
+      "main": [
+        [
+          {
+            "node": "CRM lead id",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log AI call": {
+      "main": [
+        [
+          {
+            "node": "LLM qualify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM qualify": {
+      "main": [
+        [
+          {
+            "node": "Validate AI output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI unavailable → review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate AI output": {
+      "main": [
+        [
+          {
+            "node": "Decision by AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision by AI": {
+      "main": [
+        [
+          {
+            "node": "AI qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI qualified?": {
+      "main": [
+        [
+          {
+            "node": "CRM lead id",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI unavailable → review": {
+      "main": [
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM lead id": {
+      "main": [
+        [
+          {
+            "node": "Sync to CRM (03)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync to CRM (03)": {
+      "main": [
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "lp05errors000001"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

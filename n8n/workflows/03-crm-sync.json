@@ -1,0 +1,576 @@
+{
+  "id": "lp03crmsync00001",
+  "name": "03 CRM sync",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 03 CRM sync\nQualified leads become CRM contacts through the HubSpot CRM v3 contacts API (search by email → create or update). The bundled mock speaks the same subset, so CRM_BASE_URL is the only switch. Idempotent: a lead is pushed once (crm_id), and a schedule retries leads that failed to sync.",
+        "width": 560,
+        "height": 160,
+        "color": 7
+      },
+      "name": "Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        40,
+        -200
+      ],
+      "id": "lp03crmsync00001-01"
+    },
+    {
+      "parameters": {},
+      "name": "When called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        40,
+        40
+      ],
+      "id": "lp03crmsync00001-02"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "name": "Every 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        40,
+        230
+      ],
+      "id": "lp03crmsync00001-03"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select id as lead_id from leads where decision = 'qualified' and crm_id is null order by id limit 50",
+        "options": {}
+      },
+      "name": "Pending sync",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        300,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp03crmsync00001-04"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from leads where id = $1",
+        "options": {
+          "queryReplacement": "={{ [$json.lead_id] }}"
+        }
+      },
+      "name": "Load lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp03crmsync00001-05"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "crm_base_url",
+              "value": "={{ $env.CRM_BASE_URL }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "crm_token",
+              "value": "={{ $env.CRM_TOKEN }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "notify_url",
+              "value": "={{ $env.NOTIFY_WEBHOOK_URL }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        820,
+        40
+      ],
+      "id": "lp03crmsync00001-06"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1080,
+        40
+      ],
+      "id": "lp03crmsync00001-07"
+    },
+    {
+      "parameters": {},
+      "name": "Lead",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        40
+      ],
+      "id": "lp03crmsync00001-08"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Maps a qualified lead to HubSpot CRM v3 contact properties (standard properties only, so it works on a fresh\n// HubSpot account; map score/segment to custom properties if your portal has them). Pure function, unit-tested.\nfunction main(items) {\n  return items.map((lead) => {\n    const tag = `[lead-pipeline] decision=${lead.decision} by=${lead.decided_by} score=${lead.score ?? 'n/a'} segment=${lead.segment ?? 'n/a'}`;\n    const properties = {\n      email: lead.email || undefined,\n      phone: lead.phone || undefined,\n      firstname: lead.first_name || undefined,\n      lastname: lead.last_name || undefined,\n      company: lead.company || undefined,\n      jobtitle: lead.job_title || undefined,\n      website: lead.domain || undefined,\n      country: lead.country || undefined,\n      hs_lead_status: 'NEW',\n      message: [\n        tag,\n        lead.reason ? `reason: ${lead.reason}` : null,\n        lead.opener ? `opener: ${lead.opener}` : null,\n        lead.message ? `original message: ${lead.message}` : null,\n      ].filter(Boolean).join('\\n'),\n    };\n    for (const k of Object.keys(properties)) if (properties[k] === undefined) delete properties[k];\n    return { lead_id: lead.id, email: lead.email || '', phone: lead.phone || '', properties };\n  });\n}\n\nreturn main($input.all().map((i) => i.json), {}).map((json) => ({ json }));"
+      },
+      "name": "Contact properties",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        40
+      ],
+      "id": "lp03crmsync00001-09"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.crm_base_url + '/crm/v3/objects/contacts/search' }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').first().json.crm_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filterGroups: [ { filters: [ { propertyName: $json.email ? 'email' : 'phone', operator: 'EQ', value: $json.email || $json.phone } ] } ], properties: ['email'], limit: 1 }) }}"
+      },
+      "name": "Search contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1860,
+        40
+      ],
+      "id": "lp03crmsync00001-10"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ Number($json.total || 0) > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2120,
+        40
+      ],
+      "id": "lp03crmsync00001-11"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Config').first().json.crm_base_url + '/crm/v3/objects/contacts/' + $json.results[0].id }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').first().json.crm_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: $('Contact properties').first().json.properties }) }}"
+      },
+      "name": "Update contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2380,
+        40
+      ],
+      "id": "lp03crmsync00001-12"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.crm_base_url + '/crm/v3/objects/contacts' }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').first().json.crm_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: $('Contact properties').first().json.properties }) }}"
+      },
+      "name": "Create contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2380,
+        230
+      ],
+      "id": "lp03crmsync00001-13"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update leads set crm_id = $2, crm_synced_at = now() where id = $1 returning id, crm_id",
+        "options": {
+          "queryReplacement": "={{ [$('Contact properties').first().json.lead_id, String($json.id)] }}"
+        }
+      },
+      "name": "Save CRM id",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2640,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp03crmsync00001-14"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ !!$('Config').first().json.notify_url }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Notify on?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2900,
+        40
+      ],
+      "id": "lp03crmsync00001-15"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.notify_url }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'New qualified lead synced to CRM: ' + $('Contact properties').first().json.email + ' (' + ($('Contact properties').first().json.properties.company || 'no company') + '), CRM id ' + $json.crm_id }) }}"
+      },
+      "name": "Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3160,
+        40
+      ],
+      "onError": "continueRegularOutput",
+      "id": "lp03crmsync00001-16"
+    },
+    {
+      "parameters": {},
+      "name": "Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        230
+      ],
+      "id": "lp03crmsync00001-17"
+    }
+  ],
+  "connections": {
+    "When called": {
+      "main": [
+        [
+          {
+            "node": "Load lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 15 min": {
+      "main": [
+        [
+          {
+            "node": "Pending sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pending sync": {
+      "main": [
+        [
+          {
+            "node": "Load lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load lead": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop": {
+      "main": [
+        [
+          {
+            "node": "Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead": {
+      "main": [
+        [
+          {
+            "node": "Contact properties",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contact properties": {
+      "main": [
+        [
+          {
+            "node": "Search contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search contact": {
+      "main": [
+        [
+          {
+            "node": "Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exists?": {
+      "main": [
+        [
+          {
+            "node": "Update contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update contact": {
+      "main": [
+        [
+          {
+            "node": "Save CRM id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create contact": {
+      "main": [
+        [
+          {
+            "node": "Save CRM id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save CRM id": {
+      "main": [
+        [
+          {
+            "node": "Notify on?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify on?": {
+      "main": [
+        [
+          {
+            "node": "Notify",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify": {
+      "main": [
+        [
+          {
+            "node": "Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "lp05errors000001"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

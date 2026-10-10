@@ -1,0 +1,286 @@
+{
+  "id": "lp06dashboard001",
+  "name": "06 Dashboard",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 06 Dashboard\nGET /webhook/dashboard renders metrics, the review queue and recent leads from SQL views; GET /webhook/metrics returns the metrics row as JSON for monitoring.",
+        "width": 560,
+        "height": 110,
+        "color": 7
+      },
+      "name": "Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        40,
+        -160
+      ],
+      "id": "lp06dashboard001-01"
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "dashboard",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Dashboard webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        40
+      ],
+      "webhookId": "lp-dashboard",
+      "id": "lp06dashboard001-02"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from v_metrics",
+        "options": {}
+      },
+      "name": "Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        300,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "id": "lp06dashboard001-03"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from v_review_queue limit 50",
+        "options": {}
+      },
+      "name": "Queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "id": "lp06dashboard001-04"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select id, email, company, job_title, decision, decided_by, score, segment, crm_id, updated_at from leads order by updated_at desc limit 30",
+        "options": {}
+      },
+      "name": "Recent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        820,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "id": "lp06dashboard001-05"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Renders the dashboard page from the metrics row, the review queue and the recent leads. Pure function, unit-tested.\n// Input item: { metrics, queue: [...], recent: [...] }\nfunction esc(v) {\n  return String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\n}\nfunction n(v) { return Number(v || 0); }\n\nfunction main(items) {\n  return items.map(({ metrics, queue, recent }) => {\n    const m = metrics || {};\n    const total = n(m.leads_total), undecided = n(m.undecided);\n    const decided = total - undecided;\n    const withoutAi = n(m.decided_by_rule) + n(m.decided_by_human);\n    const pct = decided ? Math.round((withoutAi / decided) * 100) : 0;\n    const tile = (label, value, hint) => `<div class=\"tile\"><b>${esc(value)}</b><span>${esc(label)}</span>${hint ? `<small>${esc(hint)}</small>` : ''}</div>`;\n    const row = (cells) => `<tr>${cells.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`;\n    const html = `<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"15\">\n<title>Lead pipeline</title>\n<style>\n  body{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:24px;color:#1b1f27;background:#f6f7fb}\n  h1{margin:0 0 4px;font-size:22px} .sub{color:#667;margin-bottom:18px}\n  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:22px}\n  .tile{background:#fff;border:1px solid #e3e6ef;border-radius:10px;padding:12px 14px}\n  .tile b{display:block;font-size:24px;color:#2f5bea} .tile span{display:block;font-size:12px;color:#556;text-transform:uppercase;letter-spacing:.4px;margin-top:2px}\n  .tile small{display:block;color:#889;margin-top:4px}\n  h2{font-size:15px;margin:18px 0 8px} table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e3e6ef;border-radius:10px;overflow:hidden;font-size:13px}\n  th,td{padding:7px 10px;text-align:left;border-bottom:1px solid #eef0f5;vertical-align:top} th{background:#f0f2f8;font-weight:600}\n  .muted{color:#889} a{color:#2f5bea}\n</style></head><body>\n<h1>Lead pipeline</h1>\n<div class=\"sub\">n8n + PostgreSQL + LLM. Rules first, the model for the rest, a human for the doubtful cases. Review form: <a href=\"/form/review\">/form/review</a> · JSON: <a href=\"/webhook/metrics\">/webhook/metrics</a></div>\n<div class=\"tiles\">\n${tile('leads', total)}${tile('qualified', n(m.qualified))}${tile('in review', n(m.in_review))}${tile('rejected', n(m.rejected))}\n${tile('decided without AI', `${pct}%`, `${withoutAi} of ${decided} decided`)}${tile('by rule', n(m.decided_by_rule))}${tile('by AI', n(m.decided_by_ai))}${tile('by human', n(m.decided_by_human))}\n${tile('LLM calls', n(m.llm_calls))}${tile('synced to CRM', n(m.crm_synced))}${tile('rules from humans', n(m.rules_from_humans))}${tile('errors', n(m.errors))}\n</div>\n<h2>Review queue (${queue.length})</h2>\n<table><tr><th>id</th><th>email</th><th>company</th><th>title</th><th>country</th><th>score</th><th>confidence</th><th>reason</th></tr>\n${queue.length ? queue.map((q) => row([q.id, q.email, q.company, q.job_title, q.country, q.score, q.llm_confidence, q.reason])).join('') : '<tr><td colspan=\"8\" class=\"muted\">empty</td></tr>'}\n</table>\n<h2>Recent leads (${recent.length})</h2>\n<table><tr><th>id</th><th>email</th><th>company</th><th>title</th><th>decision</th><th>by</th><th>score</th><th>segment</th><th>CRM id</th></tr>\n${recent.length ? recent.map((l) => row([l.id, l.email, l.company, l.job_title, l.decision, l.decided_by, l.score, l.segment, l.crm_id])).join('') : '<tr><td colspan=\"9\" class=\"muted\">no leads yet - POST one to /webhook/lead</td></tr>'}\n</table>\n</body></html>`;\n    return { html };\n  });\n}\n\nreturn main([{ metrics: $('Metrics').first().json, queue: $('Queue').all().map((i) => i.json).filter((r) => r && r.id), recent: $('Recent').all().map((i) => i.json).filter((r) => r && r.id) }], {}).map((json) => ({ json }));"
+      },
+      "name": "Render HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        40
+      ],
+      "id": "lp06dashboard001-06"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Respond HTML",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        40
+      ],
+      "id": "lp06dashboard001-07"
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "metrics",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Metrics webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        230
+      ],
+      "webhookId": "lp-metrics",
+      "id": "lp06dashboard001-08"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from v_metrics",
+        "options": {}
+      },
+      "name": "Metrics JSON",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        300,
+        230
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "id": "lp06dashboard001-09"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "name": "Respond JSON",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        560,
+        230
+      ],
+      "id": "lp06dashboard001-10"
+    }
+  ],
+  "connections": {
+    "Dashboard webhook": {
+      "main": [
+        [
+          {
+            "node": "Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metrics": {
+      "main": [
+        [
+          {
+            "node": "Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue": {
+      "main": [
+        [
+          {
+            "node": "Recent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recent": {
+      "main": [
+        [
+          {
+            "node": "Render HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render HTML": {
+      "main": [
+        [
+          {
+            "node": "Respond HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metrics webhook": {
+      "main": [
+        [
+          {
+            "node": "Metrics JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metrics JSON": {
+      "main": [
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "lp05errors000001"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

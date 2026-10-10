@@ -1,0 +1,316 @@
+{
+  "id": "lp01intake000001",
+  "name": "01 Intake",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 01 Intake\nPOST /webhook/lead → normalize & validate (Code) → idempotent upsert by fingerprint (SQL function) → 202 with lead_id → new leads go to 02 asynchronously. Invalid payloads get a 400 with the reasons.",
+        "width": 420,
+        "height": 140,
+        "color": 7
+      },
+      "name": "Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        40,
+        -160
+      ],
+      "id": "lp01intake000001-01"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Lead webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        40
+      ],
+      "webhookId": "lp-lead-intake",
+      "id": "lp01intake000001-02"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalizes and validates one inbound lead (the webhook body). Pure function: unit-tested outside n8n.\n// Output: { ok: true, fingerprint, lead } or { ok: false, errors, received }.\nconst ALIASES = {\n  email_address: 'email', e_mail: 'email', mail: 'email',\n  title: 'job_title', position: 'job_title', role: 'job_title', jobtitle: 'job_title',\n  org: 'company', organization: 'company', organisation: 'company', company_name: 'company',\n  firstname: 'first_name', lastname: 'last_name', name: 'full_name', full_name: 'full_name', fullname: 'full_name',\n  msg: 'message', comment: 'message', comments: 'message', notes: 'message', note: 'message',\n  tel: 'phone', telephone: 'phone', mobile: 'phone', phone_number: 'phone',\n  utm_source: 'source', lead_source: 'source',\n};\nconst FIELDS = ['email', 'phone', 'first_name', 'last_name', 'company', 'job_title', 'country', 'source', 'message'];\nconst MAX_LEN = { message: 2000 };\nconst EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/;\n\nfunction str(v) {\n  return v == null ? '' : String(v).replace(/\\s+/g, ' ').trim();\n}\n\n// E.164-ish: keep digits, accept 00 and bare national formats, require 7..15 digits. Returns null when invalid.\nfunction normalizePhone(value) {\n  let s = str(value).replace(/[^\\d+]/g, '');\n  if (!s) return '';\n  if (s.startsWith('00')) s = '+' + s.slice(2);\n  if (!s.startsWith('+')) s = '+' + s;\n  const digits = s.slice(1).replace(/\\D/g, '');\n  return digits.length >= 7 && digits.length <= 15 ? '+' + digits : null;\n}\n\nfunction main(items) {\n  return items.map((item) => {\n    const body = item && typeof item.body === 'object' && item.body !== null ? item.body : item || {};\n    const lead = {};\n    const errors = [];\n\n    for (const [rawKey, value] of Object.entries(body)) {\n      const key = ALIASES[String(rawKey).toLowerCase()] || String(rawKey).toLowerCase();\n      if (key === 'full_name') {\n        const parts = str(value).split(' ');\n        if (!lead.first_name) lead.first_name = parts.shift() || '';\n        if (!lead.last_name) lead.last_name = parts.join(' ');\n        continue;\n      }\n      if (FIELDS.includes(key)) lead[key] = str(value).slice(0, MAX_LEN[key] || 200);\n    }\n    for (const f of FIELDS) if (lead[f] === undefined) lead[f] = '';\n\n    lead.email = lead.email.toLowerCase();\n    if (lead.email && !EMAIL_RE.test(lead.email)) errors.push(`invalid email: ${lead.email}`);\n    if (lead.phone) {\n      const phone = normalizePhone(lead.phone);\n      if (phone === null) errors.push(`invalid phone: ${lead.phone}`);\n      else lead.phone = phone;\n    }\n    if (!lead.email && !lead.phone) errors.push('email or phone is required');\n\n    lead.domain = lead.email ? lead.email.split('@')[1] : '';\n    if (!lead.source) lead.source = 'webhook';\n\n    if (errors.length) return { ok: false, errors, received: body };\n    // The fingerprint is the normalized identity, so re-sends of the same person dedupe at the database level.\n    const fingerprint = lead.email ? `email:${lead.email}` : `phone:${lead.phone}`;\n    return { ok: true, fingerprint, lead };\n  });\n}\n\nreturn main($input.all().map((i) => i.json), {}).map((json) => ({ json }));"
+      },
+      "name": "Normalize & validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        40
+      ],
+      "id": "lp01intake000001-03"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        40
+      ],
+      "id": "lp01intake000001-04"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select id::int, is_new from upsert_lead($1, $2::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [$json.fingerprint, JSON.stringify($json.lead)] }}"
+        }
+      },
+      "name": "Upsert lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        820,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgleads000000001",
+          "name": "Postgres leads"
+        }
+      },
+      "id": "lp01intake000001-05"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, lead_id: $json.id, is_new: $json.is_new }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "name": "Respond 202",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1080,
+        40
+      ],
+      "id": "lp01intake000001-06"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.is_new === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "New lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        40
+      ],
+      "id": "lp01intake000001-07"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "lead_id",
+              "value": "={{ $json.id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "name": "Lead id",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1600,
+        40
+      ],
+      "id": "lp01intake000001-08"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "lp02qualify00001"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "name": "Enrich & qualify (02)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1860,
+        40
+      ],
+      "id": "lp01intake000001-09"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, errors: $json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        820,
+        230
+      ],
+      "id": "lp01intake000001-10"
+    }
+  ],
+  "connections": {
+    "Lead webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize & validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize & validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Upsert lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert lead": {
+      "main": [
+        [
+          {
+            "node": "Respond 202",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 202": {
+      "main": [
+        [
+          {
+            "node": "New lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New lead?": {
+      "main": [
+        [
+          {
+            "node": "Lead id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead id": {
+      "main": [
+        [
+          {
+            "node": "Enrich & qualify (02)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "lp05errors000001"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,5 @@
+.env
+n8n/credentials/*.generated.json
+node_modules/
+*.log
+.DS_Store

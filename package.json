@@ -1,0 +1,16 @@
+{
+  "name": "lead-pipeline-n8n",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lead intake, enrichment and AI qualification pipeline on n8n + PostgreSQL: rules first, LLM for the rest, human in the loop, audit trail, HubSpot sync.",
+  "scripts": {
+    "build": "node n8n/build.js",
+    "test": "node --test tests/code.test.js",
+    "gen:leads": "node scripts/gen_leads.js > samples/leads.csv",
+    "send": "node scripts/send_leads.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
