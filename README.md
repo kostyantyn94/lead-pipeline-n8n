@@ -42,7 +42,7 @@ mock CRM. Numbers from `v_metrics`, the mock servers' `/stats` and the audit log
 | Rule guard | a "reject this domain" request for a gmail.com lead was refused: free-mail domains never become rules |
 | LLM outage (mock returns 500) | 3 attempts, then the lead lands in review with reason `ai_unavailable`, nothing hangs |
 | LLM flaky (every 2nd call fails) | 3 calls, 1 failure, both leads decided normally: retries recover |
-| CRM unreachable | the error-handler workflow stored the failure (workflow, node, message); the lead waits for the 15-minute sync retry |
+| CRM unreachable | the error-handler workflow stored the failure (workflow, node, message); the 15-minute schedule synced the lead 10 minutes later, once the CRM was back |
 
 The rule/LLM split depends on your rules and your traffic; the point is that the split is measurable and tunable.
 
